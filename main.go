@@ -130,7 +130,7 @@ var (
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	cfgPath := flag.String("cfg", "./swarm_cfg.json", "path to json config file")
+	cfgPath := flag.String("cfg", "./swarm_cfg.json", "path to json config file. See https://github.com/yashbonde/swarm-buddy/blob/master/swarm_cfg.json")
 	flag.Parse()
 
 	configPath = *cfgPath

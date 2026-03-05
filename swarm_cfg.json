@@ -12,7 +12,7 @@
             "prompt": "Please create the latest report.",
             "schedule": {
                 "every": "day",
-                "time": "16:36"
+                "time": "16:20"
             }
         },
         "repomanager": {
