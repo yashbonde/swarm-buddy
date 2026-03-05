@@ -1,0 +1,26 @@
+{
+    "server": {
+        "port": 7070,
+        "log": "./swarm_buddy.log",
+        "db": "./.shephard/swb_db/",
+        "shephard_agent": "agents/swarm_buddy/agent.md",
+        "shephard_skill": "agents/swarm_buddy/about.skill.md",
+        "general_agent": "agents/swarm_buddy/general_agent.md"
+    },
+    "agents": {
+        "cybermaniac": {
+            "prompt": "Please create the latest report.",
+            "schedule": {
+                "every": "day",
+                "time": "16:36"
+            }
+        },
+        "repomanager": {
+            "prompt": "Load the AGENT.md file and act accordingly perform the task."
+        },
+        "deepmarker": {
+            "prompt": "Load the AGENT.md file and act accordingly perform the task.",
+            "output_type": "application/json"
+        }
+    }
+}

@@ -1,0 +1,34 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: swarm-buddy
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+brews:
+  - name: swarm-buddy
+    homepage: "https://github.com/yashbonde/swarm-buddy"
+    description: "Swarm agent orchestrator — spawn and manage AI agents from the CLI"
+    license: "MIT"
+    repository:
+      owner: yashbonde
+      name: homebrew-tap
+    caveats: |
+      To use the shorter 'swb' alias, add this to your ~/.zshrc or ~/.bashrc:
+        alias swb='swarm-buddy'
+
+      Then start with:
+        swb -cfg home-swarm.json
