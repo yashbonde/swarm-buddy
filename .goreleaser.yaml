@@ -26,9 +26,10 @@ brews:
     repository:
       owner: yashbonde
       name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     caveats: |
       To use the shorter 'swb' alias, add this to your ~/.zshrc or ~/.bashrc:
         alias swb='swarm-buddy'
 
       Then start with:
-        swb -cfg home-swarm.json
+        swb -config swarm_cfg.json
