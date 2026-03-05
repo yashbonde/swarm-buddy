@@ -1071,7 +1071,6 @@ func handleShephard(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 		KillAt:    time.Now().Add(limit),
 	}
-	logger.Info("message", "prompt", prompt)
 
 	// this message contains a shell command just run that
 	if prompt[0] == '!' {
