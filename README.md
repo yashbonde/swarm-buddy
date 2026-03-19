@@ -1,12 +1,20 @@
-# Swarm Buddy
+# Swarm Buddy (& friends)
 
-Philosophy:
+https://yashbonde.com/swb
 
-1. Zero dependencies, one file, scalable, tested
-2. All logic is offloaded to AI agents
-3. 2.5MB runner binary size
+```bash
+git clone --depth 1 https://github.com/yashbonde/swarm-buddy.git
+cd swarm-buddy
 
-Run:
-```
-./swb -config swarm_cfg.json
+# set the env var (only works with gemini rn.)
+export GEMINI_TOKEN="<your-gemini-token>"
+
+# Run the first example (single prompt)
+go run examples/main.go --block
+
+# Run the second example (multi step conversation)
+go run examples/main.go --sequence --show-history
+
+# Run the third example (with logs for undertsanding hooks)
+go run examples/main.go --block --logs
 ```

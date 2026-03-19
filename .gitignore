@@ -40,3 +40,16 @@ agents/*/.*/
 
 *.db*
 *.log
+
+.oc-source
+bin/
+*.txt
+.swb
+index.html
+agents/
+*.py
+*.json
+*.sh
+swb
+example
+*.html
