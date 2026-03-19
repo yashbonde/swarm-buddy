@@ -103,7 +103,7 @@ func main() {
 	block := flag.Bool("block", false, "Run kernel in block mode")
 	attachLoggerHooks := flag.Bool("logs", false, "Attach logger hooks")
 	showHistory := flag.Bool("show-history", false, "Show history")
-	// prompt := flag.String("prompt", "", "Optional prompt to use with block mode")
+	prompt := flag.String("prompt", "", "Optional prompt to use with block mode. (ignores --sequence and --block)")
 	flag.Parse()
 	ctx := context.Background()
 
@@ -132,17 +132,24 @@ func main() {
 		panic(err)
 	}
 
-	if *sequence {
-		logForTable(k, "SEQUENCE") // name in table
-		runKernelStepByStep(ctx, k)
-		printTable()
-		log = []row{} // clear log
-	}
-	if *block {
+	if *prompt != "" {
 		logForTable(k, "BLOCK") // name in table
-		runKernelBlock(ctx, k)
-		printTable()
+		runKernelBlock(ctx, k, *prompt)
+		printTable(k)
 		log = []row{} // clear log
+	} else {
+		if *sequence {
+			logForTable(k, "SEQUENCE") // name in table
+			runKernelStepByStep(ctx, k)
+			printTable(k)
+			log = []row{} // clear log
+		}
+		if *block {
+			logForTable(k, "BLOCK") // name in table
+			runKernelBlock(ctx, k, "")
+			printTable(k)
+			log = []row{} // clear log
+		}
 	}
 
 }
@@ -181,23 +188,26 @@ func runKernelStepByStep(ctx context.Context, k *toroid.Kernel) {
 	fmt.Printf("\n%s\n", resp)
 }
 
-func runKernelBlock(ctx context.Context, k *toroid.Kernel) {
+func runKernelBlock(ctx context.Context, k *toroid.Kernel, prompt string) {
 	fmt.Println("Running Kernel (block) ...")
-	out, _, err := k.Run(ctx, `Please do the following:
+	if prompt == "" {
+		prompt = `Please do the following:
 	- First, run a subagent to find if this is a git repo or not. (subagent only here)
 	- If it is a git repo, then find the latest commit message.
 	- Else, pick nearest file and get me the sha256 of it.
 	- Send that data to https://webhook.site/0024a8a9-b4d4-49b9-bf80-b919a8d81cf7
 	- List all the files in the current directory and tell me if there is a file with ".md" extension.
 	- Run a subagent to read the first 10 lines of this file and tell me what you think.
-	`)
+	`
+	}
+	out, _, err := k.Run(ctx, prompt)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println(out)
 }
 
-func printTable() {
+func printTable(k *toroid.Kernel) {
 	// ── Table ────────────────────────────────────────────────────────────────
 	const colSession = 9
 	const colKind = 14
@@ -257,4 +267,5 @@ func printTable() {
 	grandTotal := fmt.Sprintf("GRAND TOTAL: $%.6f (₹%.4f)", totalUSD, totalINR)
 	fmt.Printf("| %-*s |\n", colSession+colKind+colDetail+6, grandTotal)
 	fmt.Println(sep)
+	fmt.Println("Session ID: ", k.SessionID())
 }

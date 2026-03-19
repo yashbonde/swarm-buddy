@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"charm.land/fantasy"
@@ -20,11 +21,11 @@ func NewWriteTool(a Agent, desc string) *ToolDef {
 		}
 
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		if err := os.WriteFile(path, []byte(args.Content), 0644); err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		return fantasy.ToolResponse{Type: "text", Content: "File written successfully."}, nil

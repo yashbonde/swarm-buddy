@@ -30,7 +30,7 @@ func NewMultiEditTool(a Agent, desc string) *ToolDef {
 
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 		content := string(b)
 
@@ -41,10 +41,10 @@ func NewMultiEditTool(a Agent, desc string) *ToolDef {
 
 			count := strings.Count(content, oldStr)
 			if count == 0 {
-				return fantasy.ToolResponse{}, fmt.Errorf("edit %d: oldString not found", i)
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: edit %d: oldString not found", i)}, nil
 			}
 			if !replaceAll && count > 1 {
-				return fantasy.ToolResponse{}, fmt.Errorf("edit %d: found multiple matches for oldString", i)
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: edit %d: found multiple matches for oldString", i)}, nil
 			}
 
 			n := 1
@@ -55,7 +55,7 @@ func NewMultiEditTool(a Agent, desc string) *ToolDef {
 		}
 
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		return fantasy.ToolResponse{Type: "text", Content: "Multiple edits applied successfully."}, nil

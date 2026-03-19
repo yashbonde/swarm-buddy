@@ -3,7 +3,10 @@
 package toroid
 
 import (
+	"context"
+	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
 	"reflect"
 	"strconv"
@@ -28,8 +31,8 @@ var (
 	logWidth int
 )
 
-// "YY/MM/DD HH:MM:SS [LEVL]  " = 26 chars
-const logPrefix = 26
+// "YY/MM/DD HH:MM:SS [LEVL]" = 25 chars
+const logPrefix = 25
 
 func init() {
 	size, _ := tsize.GetSize()
@@ -70,8 +73,7 @@ func wrapInLogWidth(x string) string {
 }
 
 func logLine(level, color, msg string) {
-	ts := time.Now().Format("06/01/02 15:04:05")
-	fmt.Fprintf(os.Stdout, "%s %s[%s]%s  %s", ts, color, level, colorReset, wrapInLogWidth(msg))
+	slog.Log(context.Background(), slog.LevelInfo, fmt.Sprintf("%s", wrapInLogWidth(msg)))
 }
 
 func LogInfo(msg string, args ...any) {
@@ -147,4 +149,28 @@ func ApplyDefaults(cfg any) {
 			}
 		}
 	}
+}
+
+// NewSessionID generates a monotonic, human-readable session ID.
+// It uses the current Unix timestamp as a base to ensure monotonicity,
+// followed by a short random alphanumeric string for uniqueness and readability.
+func NewSessionID() string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const randLen = 4
+
+	// Use Unix seconds for coarse monotonicity
+	now := time.Now().Unix()
+
+	// Generate random suffix
+	b := make([]byte, randLen)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp only if crypto/rand fails
+		return fmt.Sprintf("%d", now)
+	}
+
+	for i := range b {
+		b[i] = charset[int(b[i])%len(charset)]
+	}
+
+	return fmt.Sprintf("%d-%s", now, string(b))
 }

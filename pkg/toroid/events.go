@@ -57,6 +57,7 @@ type ToolUsePayload struct {
 }
 
 type ToolUseResultPayload struct {
+	Name   string `json:"name,omitempty"`
 	Result string `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
 }

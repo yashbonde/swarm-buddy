@@ -68,6 +68,7 @@ type Config struct {
 	WorkDir   string           `json:"work_dir" description:"working directory" default:"current directory"`
 	MaxIter   int              `json:"max_iter" description:"max tool-call iterations" default:"50"`
 	Thinking  Thinking         `json:"thinking" description:"thinking budget: none | low | high" default:"none"`
+	ThinkingWriter io.Writer   `json:"-"`
 	Resume    bool             `json:"resume" description:"if true, load existing session history and continue" default:"false"`
 
 	// compaction
@@ -76,7 +77,7 @@ type Config struct {
 	TotalContextSize     int `json:"total_context_size" description:"total context window size" default:"300000"`
 
 	// logging flags
-	AttachLoggerHooks *bool `json:"attach_logger_hooks,omitempty" description:"automatically attach logger hooks" default:"true"`
+	AttachLoggerHooks *bool `json:"attach_logger_hooks,omitempty" description:"automatically attach logger hooks" default:"false"`
 	ShowHistory       *bool `json:"show_history" description:"print history" default:"false"`
 }
 
@@ -146,6 +147,13 @@ func NewKernel(ctx context.Context, cfg Config) (*Kernel, error) {
 	k.systemPrompt = systemPrompt
 
 	// Load the model
+	if cfg.Provider == nil {
+		p, err := google.New(google.WithGeminiAPIKey(cfg.APIKey))
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize default google provider: %w", err)
+		}
+		cfg.Provider = p
+	}
 	model, err := cfg.Provider.LanguageModel(ctx, cfg.Model)
 	if err != nil {
 		return nil, err
@@ -158,12 +166,12 @@ func NewKernel(ctx context.Context, cfg Config) (*Kernel, error) {
 		fTools = append(fTools, t.AgentTool)
 	}
 
-	// Default AttachLoggerHooks to true if nil
-	if cfg.AttachLoggerHooks == nil || *cfg.AttachLoggerHooks {
+	// Default AttachLoggerHooks if nil
+	if cfg.AttachLoggerHooks != nil && *cfg.AttachLoggerHooks {
 		k.OnAll(func(ctx context.Context, e Event) error {
-			// if e.Kind == EventToken || e.Kind == EventReasoning {
-			// 	return nil
-			// }
+			if e.Kind == EventToken || e.Kind == EventReasoning {
+				return nil
+			}
 			LogInfo(string(e.Kind) + " " + fmt.Sprintf("%v", e.Payload))
 			return nil
 		})
@@ -178,6 +186,15 @@ func NewKernel(ctx context.Context, cfg Config) (*Kernel, error) {
 
 	// Handle thinking
 	if cfg.Thinking != ThinkingNone {
+		if cfg.ThinkingWriter != nil {
+			k.On(EventReasoning, func(_ context.Context, e Event) error {
+				if p, ok := e.Payload.(*ReasoningPayload); ok {
+					_, err := fmt.Fprint(cfg.ThinkingWriter, p.Text)
+					return err
+				}
+				return nil
+			})
+		}
 		budget := int64(1024)
 		if cfg.Thinking == ThinkingHigh {
 			budget = 8192
@@ -327,13 +344,16 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 	}
 
 	// Trim tool results for messages older than 10 items to reduce token usage
-	if len(k.history) > 10 {
-		cutoff := len(k.history) - 10
-		placeholder := fantasy.NewUserMessage("[tool result trimmed]")
-		placeholder.Role = fantasy.MessageRoleTool
+	if len(k.history) > 4 {
+		cutoff := len(k.history) - 4
 		for i := 0; i < cutoff; i++ {
 			if k.history[i].Role == fantasy.MessageRoleTool {
-				k.history[i] = placeholder
+				for _, c := range k.history[i].Content {
+					if p, ok := c.(fantasy.ToolResultOutputContent); ok {
+						// p.Text = "[tool result trimmed]"
+						p.GetType()
+					}
+				}
 			}
 		}
 	}
@@ -388,10 +408,17 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 		toolResults := step.Response.Content.ToolResults()
 		if len(toolResults) > 0 {
 			for _, tr := range toolResults {
-				_ = k.Fire(ctx, string(EventPostToolUse), &ToolUseResultPayload{
-					Result: fmt.Sprintf("%v", tr.Result),
-					Error:  "",
-				})
+				resStr := fmt.Sprintf("%v", tr.Result)
+				payload := &ToolUseResultPayload{
+					Name:   tr.ToolName,
+					Result: resStr,
+				}
+				if strings.HasPrefix(resStr, "Error:") {
+					payload.Error = resStr
+					_ = k.Fire(ctx, string(EventPostToolUseFailure), payload)
+				} else {
+					_ = k.Fire(ctx, string(EventPostToolUse), payload)
+				}
 			}
 		}
 

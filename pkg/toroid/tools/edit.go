@@ -24,21 +24,21 @@ func NewEditTool(a Agent, desc string) *ToolDef {
 
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		sContent := string(content)
 		if !strings.Contains(sContent, args.OldText) {
-			return fantasy.ToolResponse{}, fmt.Errorf("oldText not found in file")
+			return fantasy.ToolResponse{Type: "text", Content: "Error: oldText not found in file"}, nil
 		}
 
 		if strings.Count(sContent, args.OldText) > 1 {
-			return fantasy.ToolResponse{}, fmt.Errorf("oldText found multiple times, please be more specific")
+			return fantasy.ToolResponse{Type: "text", Content: "Error: oldText found multiple times, please be more specific"}, nil
 		}
 
 		newContent := strings.Replace(sContent, args.OldText, args.NewText, 1)
 		if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		return fantasy.ToolResponse{Type: "text", Content: "File edited successfully."}, nil

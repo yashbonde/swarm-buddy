@@ -339,10 +339,14 @@ func cmdRunSpec(args []string) {
 		toroidCfg.ThinkingWriter = newThinkingWriter(os.Stderr)
 	}
 
-	a, err := toroid.New(ctx, toroidCfg)
+	a, err := toroid.NewKernel(ctx, toroidCfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+
+	if !*jsonMode {
+		attachTableHooks(a, "RUN")
 	}
 
 	// print session header
@@ -380,29 +384,31 @@ func cmdRunSpec(args []string) {
 
 	// tool call display
 	if !*jsonMode {
-		a.On(toroid.EventPreToolUse, func(_ context.Context, e toroid.Event) error {
-			p := e.Payload.(*toroid.ToolUsePayload)
-			s := renderPreToolUse(p.Name, p.Args)
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "\n%s\n", s)
-			}
-			return nil
-		})
-		a.On(toroid.EventPostToolUse, func(_ context.Context, e toroid.Event) error {
-			p := e.Payload.(*toroid.ToolUsePayload)
-			s := renderPostToolUse(p.Name, p.Result)
-			if s != "" {
-				fmt.Fprintf(os.Stderr, "%s\n", s)
-			}
-			return nil
-		})
-		a.On(toroid.EventPostToolUseFailure, func(_ context.Context, e toroid.Event) error {
-			p := e.Payload.(*toroid.ToolUsePayload)
-			fmt.Fprintf(os.Stderr, "  %s✗ %s%s\n", ansiRed, p.Error, ansiReset)
-			return nil
-		})
-	}
+	        a.On(toroid.EventPreToolUse, func(_ context.Context, e toroid.Event) error {
+	                p := e.Payload.(*toroid.ToolUsePayload)
+	                var args map[string]any
+	                json.Unmarshal([]byte(p.Args), &args)
+	                s := renderPreToolUse(p.Name, args)
+	                if s != "" {
+	                        fmt.Fprintf(os.Stderr, "\n%s\n", s)
+	                }
+	                return nil
+	        })
+	        a.On(toroid.EventPostToolUse, func(_ context.Context, e toroid.Event) error {
+	                p := e.Payload.(*toroid.ToolUseResultPayload)
+	                s := renderPostToolUse(p.Name, p.Result)
+	                if s != "" {
+	                        fmt.Fprintf(os.Stderr, "%s\n", s)
+	                }
+	                return nil
+	        })
+	        a.On(toroid.EventPostToolUseFailure, func(_ context.Context, e toroid.Event) error {
+	                p := e.Payload.(*toroid.ToolUseResultPayload)
+	                fmt.Fprintf(os.Stderr, "  %s✗ %s: %s%s\n", ansiRed, p.Name, p.Error, ansiReset)
+	                return nil
+	        })
 
+	}
 	if *jsonMode {
 		textWriter = os.Stderr
 		enc := json.NewEncoder(os.Stdout)
@@ -436,6 +442,9 @@ func cmdRunSpec(args []string) {
 		}
 		fmt.Fprintln(os.Stdout)
 		fmt.Fprintln(os.Stderr)
+		if !*jsonMode {
+			printSummaryTable(a)
+		}
 	}
 
 	if *prompt != "" {
@@ -533,7 +542,7 @@ func toroidWorker(job *JobState, folder string, persistPrompt bool, taskPrefix s
 	ctx, cancel := context.WithDeadline(context.Background(), job.KillAt)
 	defer cancel()
 
-	agent, _ := toroid.New(ctx, toroid.Config{
+	agent, _ := toroid.NewKernel(ctx, toroid.Config{
 		Model:     cfg.Server.GeminiModel,
 		APIKey:    cfg.Server.GeminiToken,
 		SessionID: job.ID,
@@ -954,27 +963,26 @@ func renderPreToolUse(name string, args map[string]any) string {
 	case "bash":
 		fmt.Fprintf(w, "%s$ %s%s", ansiGreen, ansiReset, strMapGet(args, "command"))
 
-	case "read_file":
-		path := strMapGet(args, "path")
-		start, hasStart := args["start_line"]
-		end, hasEnd := args["end_line"]
-		if hasStart && hasEnd {
-			fmt.Fprintf(w, "> %scat%s %s:%v-%v", ansiCyan, ansiReset, path, start, end)
-		} else {
-			fmt.Fprintf(w, "> %scat%s %s", ansiCyan, ansiReset, path)
-		}
+	case "read":
+	        path := strMapGet(args, "filePath")
+	        offset := args["offset"]
+	        limit := args["limit"]
+	        if offset != nil || limit != nil {
+	                fmt.Fprintf(w, "> %scat%s %s (offset:%v limit:%v)", ansiCyan, ansiReset, path, offset, limit)
+	        } else {
+	                fmt.Fprintf(w, "> %scat%s %s", ansiCyan, ansiReset, path)
+	        }
 
-	case "write_file":
-		path := strMapGet(args, "path")
-		lines := strings.Count(strMapGet(args, "content"), "\n") + 1
-		fmt.Fprintf(w, "> Writing %s%d lines%s to %s%s%s",
-			ansiBold, lines, ansiReset, ansiItalic, path, ansiReset)
+	case "write":
+	        path := strMapGet(args, "path")
+	        lines := strings.Count(strMapGet(args, "content"), "\n") + 1
+	        fmt.Fprintf(w, "> Writing %s%d lines%s to %s%s%s",
+	                ansiBold, lines, ansiReset, ansiItalic, path, ansiReset)
 
-	case "edit_file":
-		path := strMapGet(args, "path")
-		old := truncate(strMapGet(args, "old_str"), 40)
-		fmt.Fprintf(w, "> %s~%s %s  %s%q%s", ansiYellow, ansiReset, path, ansiDim, old, ansiReset)
-
+	case "edit":
+	        path := strMapGet(args, "filePath")
+	        old := truncate(strMapGet(args, "oldText"), 40)
+	        fmt.Fprintf(w, "> %s~%s %s  %s%q%s", ansiYellow, ansiReset, path, ansiDim, old, ansiReset)
 	case "todo_write":
 		tasks, _ := args["tasks"].([]any)
 		label := "Tasks"
@@ -1032,7 +1040,7 @@ func renderPostToolUse(name string, result any) string {
 			fmt.Fprintf(w, "%s[ok]%s %s", ansiGreen, ansiReset, truncate(out, 200))
 		}
 
-	case "write_file", "edit_file", "todo_write":
+	case "write", "edit", "todo_write":
 		// info already shown in pre
 
 	case "todo_read":
@@ -1040,7 +1048,7 @@ func renderPostToolUse(name string, result any) string {
 			renderTaskTree(w, tasks)
 		}
 
-	case "read_file":
+	case "read":
 		s := strings.TrimSpace(fmt.Sprint(result))
 		if s != "" {
 			renderOutputLines(w, s, 4)
@@ -1145,9 +1153,147 @@ func renderBoxedPrompt(prompt string) string {
 	return b.String()
 }
 
-// ── thinking writer ───────────────────────────────────────────────────────────
+// ─── thinking writer ───────────────────────────────────────────────────────────
+
+type row struct {
+	session string
+	kind    string
+	detail  string
+}
+
+var eventLog []row
+
+func record(session, kind, detail string) {
+	eventLog = append(eventLog, row{session, kind, detail})
+}
+
+func shortID(id string) string {
+	var out []rune
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			out = append(out, r)
+		}
+	}
+	s := string(out)
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
+
+func usageLine(tokens map[string]toroid.Usage) string {
+	var parts []string
+	for sid, u := range tokens {
+		parts = append(parts, fmt.Sprintf("%s → in:%d out:%d rs:%d cr:%d cw:%d | $%.6f",
+			shortID(sid), u.Input, u.Output, u.Reasoning, u.CacheRead, u.CacheWrite, u.Cost))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func attachTableHooks(kernel *toroid.Kernel, label string) {
+	kernel.On(toroid.EventSessionStart, func(_ context.Context, e toroid.Event) error {
+		record(label, "Start", shortID(e.SessionID))
+		return nil
+	})
+
+	kernel.On(toroid.EventPreToolUse, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.ToolUsePayload)
+		record(label, "ToolCall", p.Name)
+		return nil
+	})
+
+	kernel.On(toroid.EventPostToolUse, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.ToolUseResultPayload)
+		record(label, "ToolDone", p.Name)
+		return nil
+	})
+
+	kernel.On(toroid.EventPostToolUseFailure, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.ToolUseResultPayload)
+		record(label, "ToolErr", p.Name)
+		return nil
+	})
+
+	kernel.On(toroid.EventReasoning, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.ReasoningPayload)
+		record(label, "Thinking", p.Text)
+		return nil
+	})
+
+	kernel.On(toroid.EventPreCompact, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.CompactPayload)
+		record(label, "Compact", fmt.Sprintf("%d messages", p.MessageCount))
+		return nil
+	})
+
+	kernel.On(toroid.EventStop, func(_ context.Context, e toroid.Event) error {
+		p := e.Payload.(*toroid.UsagePayload)
+		record(label, "Cost", usageLine(p.Tokens))
+		return nil
+	})
+}
+
+func printSummaryTable(k *toroid.Kernel) {
+	const colSession = 9
+	const colKind = 14
+	const colDetail = 85
+
+	sep := fmt.Sprintf("+%s+%s+%s+",
+		strings.Repeat("-", colSession+2),
+		strings.Repeat("-", colKind+2),
+		strings.Repeat("-", colDetail+2),
+	)
+
+	header := fmt.Sprintf("| %-*s | %-*s | %-*s |",
+		colSession, "Session",
+		colKind, "Event",
+		colDetail, "Detail",
+	)
+
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, sep)
+	fmt.Fprintln(os.Stderr, header)
+	fmt.Fprintln(os.Stderr, sep)
+	for _, r := range eventLog {
+		detail := r.detail
+
+		for len(detail) > 0 {
+			chunk := detail
+			if len(chunk) > colDetail {
+				chunk = chunk[:colDetail]
+			}
+			fmt.Fprintf(os.Stderr, "| %-*s | %-*s | %-*s |\n",
+				colSession, r.session,
+				colKind, r.kind,
+				colDetail, chunk,
+			)
+			detail = detail[len(chunk):]
+			r.session = ""
+			r.kind = ""
+		}
+	}
+	fmt.Fprintln(os.Stderr, sep)
+
+	var totalUSD float64
+	for _, r := range eventLog {
+		if r.kind == "Cost" {
+			var turnCost float64
+			parts := strings.Split(r.detail, "| $")
+			if len(parts) > 1 {
+				fmt.Sscanf(parts[1], "%f", &turnCost)
+				totalUSD += turnCost
+			}
+		}
+	}
+
+	totalINR := totalUSD * 94.0
+	grandTotal := fmt.Sprintf("GRAND TOTAL: $%.6f (₹%.4f)", totalUSD, totalINR)
+	fmt.Fprintf(os.Stderr, "| %-*s |\n", colSession+colKind+colDetail+6, grandTotal)
+	fmt.Fprintln(os.Stderr, sep)
+}
 
 type thinkingWriter struct {
+
 	w       io.Writer
 	started bool
 }

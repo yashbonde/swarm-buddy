@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
 	"charm.land/fantasy"
 )
 
@@ -35,7 +36,7 @@ func (a ReadArgs) Validate() error {
 func NewReadTool(a Agent, desc string) *ToolDef {
 	fTool := fantasy.NewAgentTool("read", desc, func(ctx context.Context, args ReadArgs, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		if err := args.Validate(); err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		path := args.FilePath
@@ -44,7 +45,7 @@ func NewReadTool(a Agent, desc string) *ToolDef {
 		}
 
 		offset := args.Offset
-		if offset == 0 {
+		if offset <= 0 {
 			offset = 1
 		}
 		limit := args.Limit
@@ -54,14 +55,14 @@ func NewReadTool(a Agent, desc string) *ToolDef {
 
 		info, err := os.Stat(path)
 		if err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		var content string
 		if info.IsDir() {
 			entries, err := os.ReadDir(path)
 			if err != nil {
-				return fantasy.ToolResponse{}, err
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 			}
 			var names []string
 			for _, e := range entries {
@@ -89,17 +90,17 @@ func NewReadTool(a Agent, desc string) *ToolDef {
 			// File reading
 			f, err := os.Open(path)
 			if err != nil {
-				return fantasy.ToolResponse{}, err
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 			}
 			defer f.Close()
 
 			// Simple binary check
 			isBinary, err := isBinaryFile(f)
 			if err != nil {
-				return fantasy.ToolResponse{}, err
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 			}
 			if isBinary {
-				return fantasy.ToolResponse{}, fmt.Errorf("cannot read binary file: %s", path)
+				return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: cannot read binary file: %s", path)}, nil
 			}
 			f.Seek(0, 0)
 
@@ -123,7 +124,11 @@ func NewReadTool(a Agent, desc string) *ToolDef {
 
 			content = fmt.Sprintf("<path>%s</path>\n<type>file</type>\n<content>\n%s\n", path, strings.Join(raw, "\n"))
 			if scanner.Scan() || lineNum >= offset+limit {
-				content += fmt.Sprintf("\n(Showing lines %d-%d. Use offset=%d to continue.)", offset, offset+len(raw)-1, offset+len(raw))
+				lastLine := offset + len(raw) - 1
+				if lastLine < offset {
+					lastLine = offset
+				}
+				content += fmt.Sprintf("\n(Showing lines %d-%d. Use offset=%d to continue.)", offset, lastLine, offset+len(raw))
 			} else {
 				content += fmt.Sprintf("\n(End of file - total %d lines)", lineNum)
 			}

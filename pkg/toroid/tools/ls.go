@@ -26,7 +26,7 @@ func NewLsTool(a Agent, desc string) *ToolDef {
 
 		entries, err := os.ReadDir(path)
 		if err != nil {
-			return fantasy.ToolResponse{}, err
+			return fantasy.ToolResponse{Type: "text", Content: fmt.Sprintf("Error: %v", err)}, nil
 		}
 
 		var names []string

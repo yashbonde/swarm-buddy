@@ -33,7 +33,6 @@ go.work.sum
 
 .claude
 .shephard
-assets/
 
 # all hidden folders of the agents 
 agents/*/.*/
