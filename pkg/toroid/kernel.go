@@ -360,9 +360,30 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 
 	// Build Agent and handle streaming and events
 	agent := fantasy.NewAgent(k.model, k.fantasyAgentOpts...)
+	var runningCostUSD float64
 	result, err := agent.Stream(ctx, fantasy.AgentStreamCall{
 		Prompt:   prompt,
 		Messages: k.history,
+		OnStepFinish: func(step fantasy.StepResult) error {
+			u := Usage{
+				Input:      int32(step.Usage.InputTokens),
+				CacheWrite: int32(step.Usage.CacheCreationTokens),
+				CacheRead:  int32(step.Usage.CacheReadTokens),
+				Reasoning:  int32(step.Usage.ReasoningTokens),
+				Output:     int32(step.Usage.OutputTokens),
+			}
+			u.Cost = CalculateCost(k.cfg.Model, u)
+			runningCostUSD += u.Cost
+			turnPaise := int64(u.Cost * 94.0 * 100)
+			totalPaise := int64(runningCostUSD * 94.0 * 100)
+			_ = k.memory.AppendTurnCost(turnPaise, totalPaise)
+			_ = k.Fire(ctx, string(EventTurnCost), &TurnCostPayload{
+				TurnUsage:    u,
+				TurnCostUSD:  u.Cost,
+				TotalCostUSD: runningCostUSD,
+			})
+			return nil
+		},
 	})
 	if err != nil {
 		return err

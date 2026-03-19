@@ -19,6 +19,7 @@ const (
 	EventTaskCompleted      EventKind = "TaskCompleted"      // before the task is completed
 	EventTitle              EventKind = "Title"              // fired async when session title is ready
 	EventReasoning          EventKind = "Reasoning"          // streamed reasoning/thinking tokens
+	EventTurnCost           EventKind = "TurnCost"           // after each LLM turn, with incremental cost
 	EventStop               EventKind = "Stop"               // when the agent is stopped
 	EventPreCompact         EventKind = "PreCompact"         // before compacting the memory
 	EventSessionEnd         EventKind = "SessionEnd"         // after the session ends
@@ -99,4 +100,11 @@ type TaskPayload struct {
 // across the session and all subagents it spawned, keyed by session ID.
 type UsagePayload struct {
 	Tokens map[string]Usage `json:"tokens"` // sessionID -> token breakdown
+}
+
+// TurnCostPayload is attached to EventTurnCost, fired after each LLM turn.
+type TurnCostPayload struct {
+	TurnUsage    Usage   `json:"turn_usage"`    // tokens consumed in this single turn
+	TurnCostUSD  float64 `json:"turn_cost_usd"` // cost of this turn in USD
+	TotalCostUSD float64 `json:"total_cost_usd"` // cumulative cost so far in USD
 }

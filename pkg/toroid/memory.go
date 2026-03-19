@@ -149,6 +149,25 @@ func (m *MemoryStore) LoadPrevSession() string {
 	return string(b)
 }
 
+// AppendTurnCost writes a single turn's cost (in paise) as a JSON line to the usage log.
+func (m *MemoryStore) AppendTurnCost(turnPaise, totalPaise int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	f, err := os.OpenFile(m.usagePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	b, err := json.Marshal(map[string]int64{"turn_paise": turnPaise, "total_paise": totalPaise})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(f, "%s\n", b)
+	return err
+}
+
 // AppendUsage writes a single UsageMetadata snapshot as a JSON line to the usage log.
 func (m *MemoryStore) AppendUsage(u *genai.GenerateContentResponseUsageMetadata) error {
 	m.mu.Lock()
