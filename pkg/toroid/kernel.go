@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"text/template"
 	"time"
 
@@ -49,12 +50,13 @@ type Kernel struct {
 	model            fantasy.LanguageModel
 	hooks            *HookRegistry
 	tools            *tools.Registry
-	memory           *MemoryStore
+	store            *Store
+	seq              atomic.Uint64
 	systemPrompt     string
 	title            string
 	history          []fantasy.Message
-	stepUsage        []Usage // per-step token usage, index-aligned with stepHistoryStart
-	stepHistoryStart []int  // history index where each step's messages begin
+	stepUsage        []Usage          // per-step token usage, index-aligned with stepHistoryStart
+	stepHistoryStart []int            // history index where each step's messages begin
 	usage            map[string]Usage // sessionID -> total tokens used (self + subagents)
 	usageMu          sync.Mutex
 	fantasyAgentOpts []fantasy.AgentOption
@@ -71,6 +73,13 @@ type Config struct {
 	MaxIter        int              `json:"max_iter" description:"max tool-call iterations" default:"50"`
 	Thinking       Thinking         `json:"thinking" description:"thinking budget: none | low | high" default:"none"`
 	ThinkingWriter io.Writer        `json:"-"`
+
+	// Trace/span hierarchy
+	TraceID      string `json:"trace_id,omitempty"`       // inherited from parent; root sets TraceID = SessionID
+	ParentSpanID string `json:"parent_span_id,omitempty"` // parent kernel's SessionID
+
+	// Persistence
+	Save bool `json:"save" description:"persist events, costs and metadata to the bbolt store" default:"false"`
 
 	// Session management
 	Resume        bool `json:"resume" description:"if true, load existing session history and continue" default:"false"`
@@ -102,6 +111,10 @@ func NewKernel(ctx context.Context, cfg Config) (*Kernel, error) {
 	if cfg.SessionID == "" {
 		cfg.SessionID = NewSessionID()
 	}
+	// Root kernel: TraceID == SessionID
+	if cfg.TraceID == "" {
+		cfg.TraceID = cfg.SessionID
+	}
 
 	ApplyDefaults(&cfg) // cfg OR default_cfg
 
@@ -114,12 +127,28 @@ func NewKernel(ctx context.Context, cfg Config) (*Kernel, error) {
 	}
 	k.tools = initTools(k)
 
-	// Initialize Session Storage
-	mem, err := newMemoryStore(cfg.SessionID)
-	if err != nil {
-		return nil, err
+	// Initialize bbolt Store (only when --save is set)
+	if cfg.Save {
+		store, err := NewStore()
+		if err != nil {
+			return nil, err
+		}
+		k.store = store
+
+		_ = store.SaveSpanMeta(SpanMeta{
+			SpanID:       cfg.SessionID,
+			TraceID:      cfg.TraceID,
+			ParentSpanID: cfg.ParentSpanID,
+			Model:        cfg.Model,
+			StartedAt:    time.Now().UnixNano(),
+		})
+		if cfg.TraceID == cfg.SessionID {
+			_ = store.SaveTraceMeta(TraceMeta{
+				TraceID:   cfg.TraceID,
+				StartedAt: time.Now().UnixNano(),
+			})
+		}
 	}
-	k.memory = mem
 
 	// Load system prompt
 	systemPrompt, err := buildSystemPrompt(cfg.WorkDir)
@@ -258,12 +287,19 @@ func (k *Kernel) SessionID() string { return k.cfg.SessionID }
 func (k *Kernel) Model() string     { return k.cfg.Model }
 
 func (k *Kernel) Fire(ctx context.Context, kind string, payload any) error {
-	return k.hooks.Fire(ctx, Event{
+	event := Event{
 		Kind:      EventKind(kind),
 		SessionID: k.cfg.SessionID,
-		Timestamp: time.Now(),
+		TraceID:   k.cfg.TraceID,
+		SpanID:    k.cfg.SessionID,
+		EmitTS:    time.Now().UnixNano(),
+		Seq:       k.seq.Add(1),
 		Payload:   payload,
-	})
+	}
+	if k.store != nil && event.Kind != EventToken && event.Kind != EventReasoning {
+		_ = k.store.AppendEvent(k.cfg.TraceID, k.cfg.SessionID, event)
+	}
+	return k.hooks.Fire(ctx, event)
 }
 
 // TODO: Improve this function, idea is to use this as a single place for all usage udpates
@@ -373,8 +409,24 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 					LogError("[%s] Failed to generate title: %v", k.cfg.SessionID, err)
 					return
 				}
-				_ = k.Fire(ctx, string(EventTitle), TitlePayload{
-					Title: resp.Response.Content.Text(),
+				title := strings.SplitN(strings.TrimSpace(resp.Response.Content.Text()), "\n", 2)[0]
+				k.title = title
+				if k.store != nil {
+					_ = k.store.SaveTraceMeta(TraceMeta{
+						TraceID:   k.cfg.TraceID,
+						Title:     title,
+						StartedAt: time.Now().UnixNano(),
+					})
+					_ = k.store.SaveSpanMeta(SpanMeta{
+						SpanID:       k.cfg.SessionID,
+						TraceID:      k.cfg.TraceID,
+						ParentSpanID: k.cfg.ParentSpanID,
+						Model:        k.cfg.Model,
+						Title:        title,
+					})
+				}
+				_ = k.Fire(ctx, string(EventTitle), &TitlePayload{
+					Title: title,
 				})
 				u := Usage{}
 				u.FromFantasyUsage(resp.TotalUsage, k.cfg.Model)
@@ -443,7 +495,9 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 
 			turnPaise := int64(u.Cost * INRPerUSD * 100)
 			totalPaise := int64(runningCostUSD * INRPerUSD * 100)
-			_ = k.memory.AppendTurnCost(turnPaise, totalPaise)
+			if k.store != nil {
+				_ = k.store.AppendCost(k.cfg.TraceID, k.cfg.SessionID, turnPaise, totalPaise)
+			}
 			_ = k.Fire(ctx, string(EventTurnCost), &TurnCostPayload{
 				TurnUsage:    u,
 				TurnCostUSD:  u.Cost,
@@ -587,8 +641,10 @@ func (k *Kernel) Compact(ctx context.Context) error {
 func (k *Kernel) RunSubagent(ctx context.Context, task string) (string, error) {
 	// Inherit provider, model, and key from parent, but clean up
 	subCfg := k.cfg
-	subCfg.SessionID = NewSessionID() // new session ID
-	subCfg.GenerateTitle = false      // don't cascase titleGeneration coroutines
+	subCfg.SessionID = NewSessionID()     // new session ID
+	subCfg.TraceID = k.cfg.TraceID        // inherit trace
+	subCfg.ParentSpanID = k.cfg.SessionID // parent span = current session
+	subCfg.GenerateTitle = false          // don't cascade titleGeneration coroutines
 
 	// Create an independent Kernel instance for the subagent
 	subKernel, err := NewKernel(ctx, subCfg)

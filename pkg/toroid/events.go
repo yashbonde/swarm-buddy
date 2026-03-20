@@ -1,7 +1,5 @@
 package toroid
 
-import "time"
-
 type EventKind string
 
 const (
@@ -28,7 +26,10 @@ const (
 type Event struct {
 	Kind      EventKind `json:"kind"`
 	SessionID string    `json:"session_id"`
-	Timestamp time.Time `json:"timestamp"`
+	TraceID   string    `json:"trace_id"`
+	SpanID    string    `json:"span_id"`
+	EmitTS    int64     `json:"emit_ts"` // UnixNano wall clock
+	Seq       uint64    `json:"seq"`     // monotonic counter within a span
 	Payload   any       `json:"payload,omitempty"`
 }
 
