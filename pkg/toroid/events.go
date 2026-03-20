@@ -104,7 +104,7 @@ type UsagePayload struct {
 
 // TurnCostPayload is attached to EventTurnCost, fired after each LLM turn.
 type TurnCostPayload struct {
-	TurnUsage    Usage   `json:"turn_usage"`    // tokens consumed in this single turn
-	TurnCostUSD  float64 `json:"turn_cost_usd"` // cost of this turn in USD
+	TurnUsage    Usage   `json:"turn_usage"`     // tokens consumed in this single turn
+	TurnCostUSD  float64 `json:"turn_cost_usd"`  // cost of this turn in USD
 	TotalCostUSD float64 `json:"total_cost_usd"` // cumulative cost so far in USD
 }

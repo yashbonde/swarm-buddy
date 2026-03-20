@@ -6,7 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"charm.land/fantasy"
 )
+
+// INRPerUSD is the exchange rate used to convert USD costs to Indian Rupees.
+const INRPerUSD = 94.0
 
 // ModelPricing defines the cost per token for an LLM.
 type ModelPricing struct {
@@ -117,4 +122,24 @@ func CalculateCost(modelID string, usage Usage) float64 {
 // GetPricing is a legacy helper for GetDefaultPricing().Get().
 func GetPricing(modelID string) ModelPricing {
 	return GetDefaultPricing().Get(modelID)
+}
+
+// Usage tracker
+
+type Usage struct {
+	Output     int64
+	Input      int64
+	Reasoning  int64
+	CacheRead  int64
+	CacheWrite int64
+	Cost       float64
+}
+
+func (u *Usage) FromFantasyUsage(usage fantasy.Usage, model string) {
+	u.Output = usage.OutputTokens
+	u.Input = usage.InputTokens
+	u.Reasoning = usage.ReasoningTokens
+	u.CacheRead = usage.CacheReadTokens
+	u.CacheWrite = usage.CacheCreationTokens
+	u.Cost = CalculateCost(model, *u)
 }

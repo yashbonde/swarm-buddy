@@ -53,6 +53,8 @@ type Kernel struct {
 	systemPrompt     string
 	title            string
 	history          []fantasy.Message
+	stepUsage        []Usage // per-step token usage, index-aligned with stepHistoryStart
+	stepHistoryStart []int  // history index where each step's messages begin
 	usage            map[string]Usage // sessionID -> total tokens used (self + subagents)
 	usageMu          sync.Mutex
 	fantasyAgentOpts []fantasy.AgentOption
@@ -61,47 +63,27 @@ type Kernel struct {
 
 // Config holds all options for creating a Kernel.
 type Config struct {
-	Provider  fantasy.Provider `json:"provider,omitempty" description:"llm provider"`
-	Model     string           `json:"model" description:"llm model name" default:"gemini-3-flash-preview"`
-	APIKey    string           `json:"api_key,omitempty" description:"API key for the provider"`
-	SessionID string           `json:"session_id,omitempty" description:"unique identifier for the session"`
-	WorkDir   string           `json:"work_dir" description:"working directory" default:"current directory"`
-	MaxIter   int              `json:"max_iter" description:"max tool-call iterations" default:"50"`
-	Thinking  Thinking         `json:"thinking" description:"thinking budget: none | low | high" default:"none"`
-	ThinkingWriter io.Writer   `json:"-"`
-	Resume    bool             `json:"resume" description:"if true, load existing session history and continue" default:"false"`
+	Provider       fantasy.Provider `json:"provider,omitempty" description:"llm provider"`
+	Model          string           `json:"model" description:"llm model name" default:"gemini-3-flash-preview"`
+	APIKey         string           `json:"api_key,omitempty" description:"API key for the provider"`
+	SessionID      string           `json:"session_id,omitempty" description:"unique identifier for the session"`
+	WorkDir        string           `json:"work_dir" description:"working directory" default:"current directory"`
+	MaxIter        int              `json:"max_iter" description:"max tool-call iterations" default:"50"`
+	Thinking       Thinking         `json:"thinking" description:"thinking budget: none | low | high" default:"none"`
+	ThinkingWriter io.Writer        `json:"-"`
+
+	// Session management
+	Resume        bool `json:"resume" description:"if true, load existing session history and continue" default:"false"`
+	GenerateTitle bool `json:"generate_title" description:"if true, generate title for the session" default:"false"`
 
 	// compaction
 	CompactionBufferSize int `json:"compaction_buffer_size" description:"buffer size for history compaction" default:"30000"`
-	ToolCallPrune        int `json:"tool_call_prune" description:"token limit for tool call pruning" default:"40000"`
+	ToolCallPrunedSize   int `json:"tool_call_prune" description:"token limit for tool call after pruning" default:"40000"`
 	TotalContextSize     int `json:"total_context_size" description:"total context window size" default:"300000"`
 
 	// logging flags
 	AttachLoggerHooks *bool `json:"attach_logger_hooks,omitempty" description:"automatically attach logger hooks" default:"false"`
 	ShowHistory       *bool `json:"show_history" description:"print history" default:"false"`
-}
-
-type Usage struct {
-	Output     int32
-	Input      int32
-	Reasoning  int32
-	CacheRead  int32
-	CacheWrite int32
-	Cost       float64
-}
-
-// Implement tools.Agent interface
-func (k *Kernel) WorkDir() string   { return k.cfg.WorkDir }
-func (k *Kernel) SessionID() string { return k.cfg.SessionID }
-func (k *Kernel) Model() string     { return k.cfg.Model }
-
-func (k *Kernel) Fire(ctx context.Context, kind string, payload any) error {
-	return k.hooks.Fire(ctx, Event{
-		Kind:      EventKind(kind),
-		SessionID: k.cfg.SessionID,
-		Timestamp: time.Now(),
-		Payload:   payload,
-	})
 }
 
 // NewKernel creates and wires up a new Kernel.
@@ -270,6 +252,32 @@ func buildSystemPrompt(workDir string) (string, error) {
 	return buf.String(), err
 }
 
+// Implement tools.Agent interface
+func (k *Kernel) WorkDir() string   { return k.cfg.WorkDir }
+func (k *Kernel) SessionID() string { return k.cfg.SessionID }
+func (k *Kernel) Model() string     { return k.cfg.Model }
+
+func (k *Kernel) Fire(ctx context.Context, kind string, payload any) error {
+	return k.hooks.Fire(ctx, Event{
+		Kind:      EventKind(kind),
+		SessionID: k.cfg.SessionID,
+		Timestamp: time.Now(),
+		Payload:   payload,
+	})
+}
+
+// TODO: Improve this function, idea is to use this as a single place for all usage udpates
+func (k *Kernel) UpdateUse(u Usage, key string) {
+	k.usageMu.Lock()
+	if len(key) == 0 {
+		k.usage[k.cfg.SessionID] = u
+	} else {
+		k.usage[key] = u
+	}
+	k.currentTokens = int(u.Input + u.Output + u.CacheRead + u.CacheWrite)
+	k.usageMu.Unlock()
+}
+
 // On registers a hook for an event kind.
 func (k *Kernel) On(kind EventKind, fn HookFn) {
 	k.hooks.On(kind, fn)
@@ -295,7 +303,7 @@ func (k *Kernel) OnAll(fn HookFn) {
 		EventPreCompact,
 		EventSessionEnd,
 	} {
-		k.hooks.On(kind, fn)
+		k.On(kind, fn)
 	}
 }
 
@@ -311,6 +319,7 @@ func (k *Kernel) Run(ctx context.Context, prompt string) (string, UsagePayload, 
 	return buf.String(), usage, err
 }
 
+// Stream runs the agent loop and streams the response to the writer.
 func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 	// Fire session start only once
 	if len(k.history) == 0 {
@@ -320,7 +329,7 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 		}
 	}
 
-	// Auto-compact if approaching context limit
+	// Auto-compact if approaching context limit; important to do this before adding user prompt
 	if k.currentTokens > 0 && k.currentTokens >= k.cfg.TotalContextSize-k.cfg.CompactionBufferSize {
 		LogInfo("auto-compacting: currentTokens=%d threshold=%d", k.currentTokens, k.cfg.TotalContextSize-k.cfg.CompactionBufferSize)
 		if err := k.Compact(ctx); err != nil {
@@ -328,7 +337,7 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 		}
 	}
 
-	// append user message
+	// append user message; important to do this before history validation
 	k.history = append(k.history, fantasy.NewUserMessage(prompt))
 
 	// history validation
@@ -341,17 +350,79 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 			LogError("Last item (%d) is 'user' message. Got: '%s'", len(k.history)-1, k.history[len(k.history)-1].Role)
 			panic("Last item is 'user' message.")
 		}
-	}
 
-	// Trim tool results for messages older than 10 items to reduce token usage
-	if len(k.history) > 4 {
-		cutoff := len(k.history) - 4
-		for i := 0; i < cutoff; i++ {
-			if k.history[i].Role == fantasy.MessageRoleTool {
-				for _, c := range k.history[i].Content {
-					if p, ok := c.(fantasy.ToolResultOutputContent); ok {
-						// p.Text = "[tool result trimmed]"
-						p.GetType()
+		// Shoot out a coroutine to generate title, last message is always user so this
+		// works fine. Why not use a subagent?
+		// Because subagents are meant for complex tasks that requires the full prompt
+		// and intelligence. We can get away with a very small prompt and thus less cost
+		if k.cfg.GenerateTitle && k.title == "" {
+			go func() {
+				ctx := context.Background()
+				agent := fantasy.NewAgent(k.model, k.fantasyAgentOpts...)
+				titlePrompt, err := readPrompt("title.kernel.tmpl")
+				if err != nil {
+					LogError("[%s] Failed to read title prompt: %v", k.cfg.SessionID, err)
+					return
+				}
+				// feed the last message and
+				resp, err := agent.Generate(ctx, fantasy.AgentCall{
+					Prompt:   string(titlePrompt),
+					Messages: k.history[len(k.history)-1:],
+				})
+				if err != nil {
+					LogError("[%s] Failed to generate title: %v", k.cfg.SessionID, err)
+					return
+				}
+				_ = k.Fire(ctx, string(EventTitle), TitlePayload{
+					Title: resp.Response.Content.Text(),
+				})
+				u := Usage{}
+				u.FromFantasyUsage(resp.TotalUsage, k.cfg.Model)
+				_ = k.Fire(ctx, string(EventTurnCost), &TurnCostPayload{
+					TurnUsage:    u,
+					TurnCostUSD:  u.Cost,
+					TotalCostUSD: u.Cost, // this is the overall expense
+				})
+			}()
+		}
+
+		// Walk stepUsage backwards, accumulating tokens. Steps whose cumulative
+		// token total exceeds ToolCallPrunedSize get their history messages trimmed:
+		// tool call args are cleared, tool results are truncated to 30 chars.
+		if len(k.stepUsage) > 0 && len(k.stepHistoryStart) == len(k.stepUsage) {
+			var accumulated int
+			for i := len(k.stepUsage) - 1; i >= 0; i-- {
+				u := k.stepUsage[i]
+				accumulated += int(u.Input + u.Output)
+				if accumulated <= k.cfg.ToolCallPrunedSize {
+					continue
+				}
+				// This step is beyond the budget — trim its history messages.
+				start := k.stepHistoryStart[i]
+				end := len(k.history)
+				if i+1 < len(k.stepHistoryStart) {
+					end = k.stepHistoryStart[i+1]
+				}
+				for j := start; j < end; j++ {
+					msg := &k.history[j]
+					for p, part := range msg.Content {
+						switch msg.Role {
+						case fantasy.MessageRoleAssistant:
+							if tc, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part); ok {
+								tc.Input = "{}"
+								msg.Content[p] = tc
+							}
+						case fantasy.MessageRoleTool:
+							if tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
+								if txt, ok := tr.Output.(fantasy.ToolResultOutputContentText); ok {
+									if len(txt.Text) > 30 {
+										txt.Text = txt.Text[:30] + "… [trimmed]"
+										tr.Output = txt
+										msg.Content[p] = tr
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -365,17 +436,13 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 		Prompt:   prompt,
 		Messages: k.history,
 		OnStepFinish: func(step fantasy.StepResult) error {
-			u := Usage{
-				Input:      int32(step.Usage.InputTokens),
-				CacheWrite: int32(step.Usage.CacheCreationTokens),
-				CacheRead:  int32(step.Usage.CacheReadTokens),
-				Reasoning:  int32(step.Usage.ReasoningTokens),
-				Output:     int32(step.Usage.OutputTokens),
-			}
-			u.Cost = CalculateCost(k.cfg.Model, u)
+			u := Usage{}
+			u.FromFantasyUsage(step.Usage, k.cfg.Model)
 			runningCostUSD += u.Cost
-			turnPaise := int64(u.Cost * 94.0 * 100)
-			totalPaise := int64(runningCostUSD * 94.0 * 100)
+			k.stepUsage = append(k.stepUsage, u)
+
+			turnPaise := int64(u.Cost * INRPerUSD * 100)
+			totalPaise := int64(runningCostUSD * INRPerUSD * 100)
 			_ = k.memory.AppendTurnCost(turnPaise, totalPaise)
 			_ = k.Fire(ctx, string(EventTurnCost), &TurnCostPayload{
 				TurnUsage:    u,
@@ -443,22 +510,14 @@ func (k *Kernel) Stream(ctx context.Context, prompt string, w io.Writer) error {
 			}
 		}
 
+		k.stepHistoryStart = append(k.stepHistoryStart, len(k.history))
 		k.history = append(k.history, step.Messages...)
 	}
 
 	// Update Usage (Per-Turn)
-	k.usageMu.Lock()
-	u := Usage{
-		Input:      int32(result.TotalUsage.InputTokens),
-		CacheWrite: int32(result.TotalUsage.CacheCreationTokens),
-		CacheRead:  int32(result.TotalUsage.CacheReadTokens),
-		Reasoning:  int32(result.TotalUsage.ReasoningTokens),
-		Output:     int32(result.TotalUsage.OutputTokens),
-	}
-	u.Cost = CalculateCost(k.cfg.Model, u)
-	k.usage[k.cfg.SessionID] = u
-	k.currentTokens = int(u.Input + u.Output + u.CacheRead + u.CacheWrite)
-	k.usageMu.Unlock()
+	var u Usage
+	u.FromFantasyUsage(result.TotalUsage, k.cfg.Model)
+	k.UpdateUse(u, "")
 
 	if k.cfg.ShowHistory != nil && *k.cfg.ShowHistory {
 		// Print history (after usage update so currentTokens is accurate)
@@ -526,9 +585,10 @@ func (k *Kernel) Compact(ctx context.Context) error {
 
 // RunSubagent runs a subagent synchronously and returns its output.
 func (k *Kernel) RunSubagent(ctx context.Context, task string) (string, error) {
-	// Inherit provider, model, and key from parent, but give it a fresh session ID.
+	// Inherit provider, model, and key from parent, but clean up
 	subCfg := k.cfg
-	subCfg.SessionID = NewSessionID()
+	subCfg.SessionID = NewSessionID() // new session ID
+	subCfg.GenerateTitle = false      // don't cascase titleGeneration coroutines
 
 	// Create an independent Kernel instance for the subagent
 	subKernel, err := NewKernel(ctx, subCfg)
